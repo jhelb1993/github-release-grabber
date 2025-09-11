@@ -1,0 +1,22 @@
+#!/bin/ksh
+# Copyright: 2025 by Jan Helbling https://freelancer.com/u/jhelb1993 <jhelb1993@gmail.com>
+# Description: Grab DownloadURLs from github-repo, so that you dont have to use a javascript-browser :)
+# License: GNU/GPL3+
+
+set -A ARGS $@
+
+if (( ${#ARGS[@]} != 1 ));then
+	echo "Usage: github-release-grabber UserName/RepoName"
+	echo ""
+	echo "  Example: github-release-grabber NationalSecurityAgency/ghidra"
+	echo "  Example-output: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.4.2_build/ghidra_11.4.2_PUBLIC_20250826.zip"
+	exit
+fi
+
+OUTPUT=`curl -s https://api.github.com/repos/${ARGS[0]}/releases/latest \ | grep "browser_download_url.*$" | awk ' { print $2 } ' | sed s/\"//g`
+
+set -A urls $OUTPUT
+
+for url in ${urls[@]};do
+	echo $url
+done
