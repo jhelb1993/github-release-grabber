@@ -1,5 +1,8 @@
 # github-release-grabber
 
+## For what?
+For OpenBSD-Users who don't want to use a Browser with javascript to download github releases.
+
 ## Copyright
 By Jan Helbling <jhelb1993@gmail.com> || https://github.com/jhelb1993
 
