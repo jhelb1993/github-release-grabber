@@ -1,4 +1,4 @@
-# Crackme challanges
+# github-release-grabber
 
 ## Copyright
 By Jan Helbling <jhelb1993@gmail.com> || https://github.com/jhelb1993
