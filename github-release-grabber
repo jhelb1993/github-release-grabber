@@ -1,22 +1,164 @@
-#!/bin/ksh
+#!/bin/sh
 # Copyright: 2025 by Jan Helbling https://freelancer.com/u/jhelb1993 <jhelb1993@gmail.com>
-# Description: Grab DownloadURLs from github-repo, so that you dont have to use a javascript-browser :)
 # License: GNU/GPL3+
 
-set -A ARGS $@
+set -eu
 
-if (( ${#ARGS[@]} != 1 ));then
-	echo "Usage: github-release-grabber UserName/RepoName"
-	echo ""
-	echo "  Example: github-release-grabber NationalSecurityAgency/ghidra"
-	echo "  Example-output: https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_11.4.2_build/ghidra_11.4.2_PUBLIC_20250826.zip"
-	exit
+usage() {
+    cat <<'HELP'
+Usage:
+  github-release-grabber search QUERY...
+  github-release-grabber clone-url OWNER/REPO
+  github-release-grabber urls OWNER/REPO [TAG]
+  github-release-grabber download OWNER/REPO [ASSET_NAME] [TAG]
+  github-release-grabber OWNER/REPO
+
+search       Show up to 20 matching repositories and their HTTPS clone URLs.
+clone-url    Show the HTTPS clone URL of a repository.
+urls         Show release asset URLs (default: latest stable release).
+download     Download an asset into the current directory. With several assets,
+             choose interactively or supply its exact name. If there are no
+             assets, choose source.zip or source.tar.gz instead.
+
+The original OWNER/REPO invocation is an alias for urls OWNER/REPO.
+Set GITHUB_TOKEN optionally to authenticate GitHub API requests.
+HELP
+}
+
+fail() {
+    printf 'Error: %s\n' "$*" >&2
+    exit 1
+}
+
+[ "$#" -gt 0 ] || { usage; exit 1; }
+case "$1" in
+    -h|--help|help) usage; exit 0 ;;
+    search|clone-url|urls|download) action=$1; shift ;;
+    */*) action=urls ;;
+    *) usage >&2; fail "Unknown command: $1" ;;
+esac
+case "$action" in
+    search) [ "$#" -gt 0 ] && [ -n "$*" ] || fail 'Supply a search query.' ;;
+    clone-url) [ "$#" -eq 1 ] || fail 'Usage: clone-url OWNER/REPO' ;;
+    urls) [ "$#" -ge 1 ] && [ "$#" -le 2 ] || fail 'Usage: urls OWNER/REPO [TAG]' ;;
+    download) [ "$#" -ge 1 ] && [ "$#" -le 3 ] || fail 'Usage: download OWNER/REPO [ASSET_NAME] [TAG]' ;;
+esac
+
+for dependency in curl jq; do
+    command -v "$dependency" >/dev/null 2>&1 || fail "Install $dependency first (OpenBSD: pkg_add $dependency)."
+done
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/github-release-grabber.XXXXXXXX")
+download_dir=
+cleanup() {
+    rm -rf "$tmpdir"
+    if [ -n "$download_dir" ]; then rm -rf "$download_dir"; fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+api() {
+    endpoint=$1
+    shift
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+        set -- -H "Authorization: Bearer $GITHUB_TOKEN" "$@"
+    fi
+    if ! status=$(curl --silent --show-error --location --proto '=https' \
+        --proto-redir '=https' --connect-timeout 20 --max-time 60 \
+        -H 'Accept: application/vnd.github+json' \
+        --output "$tmpdir/response.json" --write-out '%{http_code}' \
+        "$@" "https://api.github.com$endpoint"); then
+        fail 'Could not reach the GitHub API.'
+    fi
+    case "$status" in
+        2??) ;;
+        *) message=$(jq -r '.message // "Request failed"' "$tmpdir/response.json" 2>/dev/null) || message='Request failed'
+           fail "GitHub HTTP $status: $message" ;;
+    esac
+    jq -e 'type == "object"' "$tmpdir/response.json" >/dev/null 2>&1 || fail 'Invalid GitHub API response.'
+}
+
+if [ "$action" = search ]; then
+    api /search/repositories --get --data-urlencode "q=$*" --data-urlencode 'per_page=20'
+    jq -e '.items | type == "array"' "$tmpdir/response.json" >/dev/null || fail 'Invalid search response.'
+    jq -r 'if (.items | length) == 0 then "No repositories found."
+        else .items[] | .full_name, ("  " + (.description // "No description.")), ("  " + .clone_url), "" end' "$tmpdir/response.json"
+    if [ "$(jq -r '.incomplete_results' "$tmpdir/response.json")" = true ]; then
+        printf 'Warning: GitHub returned incomplete search results.\n' >&2
+    fi
+    exit 0
 fi
 
-OUTPUT=`curl -s https://api.github.com/repos/${ARGS[0]}/releases/latest \ | grep "browser_download_url.*$" | awk ' { print $2 } ' | sed s/\"//g`
+repo=$1
+# Exactly two safe path components; reject URLs and API query/path injection.
+printf '%s\n' "$repo" | LC_ALL=C grep -Eq '^[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$' || fail 'Use a repository name in OWNER/REPO format.'
+case "${repo#*/}" in .|..) fail 'Invalid repository name.' ;; esac
 
-set -A urls $OUTPUT
+if [ "$action" = clone-url ]; then
+    api "/repos/$repo"
+    jq -er '.clone_url | select(type == "string" and length > 0)' "$tmpdir/response.json" || fail 'No clone URL returned.'
+    exit 0
+fi
 
-for url in ${urls[@]};do
-	echo $url
-done
+tag=
+asset_name=
+if [ "$action" = urls ]; then
+    tag=${2:-}
+else
+    asset_name=${2:-}
+    tag=${3:-}
+fi
+if [ -n "$tag" ]; then
+    encoded_tag=$(jq -nr --arg tag "$tag" '$tag | @uri')
+    api "/repos/$repo/releases/tags/$encoded_tag"
+else
+    api "/repos/$repo/releases/latest"
+fi
+jq -e '.assets | type == "array"' "$tmpdir/response.json" >/dev/null || fail 'Invalid release response.'
+
+if [ "$action" = urls ]; then
+    if [ "$(jq '.assets | length' "$tmpdir/response.json")" -eq 0 ]; then
+        printf 'This release has no attached assets. Use download for a source archive.\n' >&2
+    fi
+    jq -r '.assets[].browser_download_url' "$tmpdir/response.json"
+    exit 0
+fi
+
+jq 'if (.assets | length) > 0 then
+        [.assets[] | {name: .name, url: .browser_download_url}]
+    else [{name: "source.zip", url: .zipball_url},
+          {name: "source.tar.gz", url: .tarball_url}] end' \
+    "$tmpdir/response.json" > "$tmpdir/assets.json"
+count=$(jq 'length' "$tmpdir/assets.json")
+if [ -n "$asset_name" ]; then
+    jq --arg name "$asset_name" '[.[] | select(.name == $name)]' "$tmpdir/assets.json" > "$tmpdir/selected.json"
+    [ "$(jq 'length' "$tmpdir/selected.json")" -eq 1 ] || fail "Asset not found or ambiguous: $asset_name. Use urls to inspect release assets."
+    jq '.[0]' "$tmpdir/selected.json" > "$tmpdir/asset.json"
+else
+    if [ "$count" -eq 1 ]; then
+        choice=1
+    else
+        jq -r 'to_entries[] | "\(.key + 1)) \(.value.name)"' "$tmpdir/assets.json" >&2
+        printf 'Select a file [1-%s]: ' "$count" >&2
+        IFS= read -r choice || fail 'Supply an asset name for a non-interactive download.'
+        # Compare strings in jq to avoid shell integer overflow on invalid input.
+        jq -e --arg choice "$choice" 'to_entries | any(.[]; ((.key + 1) | tostring) == $choice)' "$tmpdir/assets.json" >/dev/null || fail 'Invalid selection.'
+    fi
+    jq --arg choice "$choice" '.[$choice | tonumber | . - 1]' "$tmpdir/assets.json" > "$tmpdir/asset.json"
+fi
+
+# GitHub filenames must not escape the download directory or contain controls.
+jq -e '.name | type == "string" and length > 0 and . != "." and . != ".." and (test("[/\\\\\\x00-\\x1f\\x7f]") | not)' "$tmpdir/asset.json" >/dev/null || fail 'Unsafe asset filename.'
+filename=$(jq -r '.name' "$tmpdir/asset.json")
+url=$(jq -er '.url | select(type == "string" and startswith("https://"))' "$tmpdir/asset.json") || fail 'Invalid download URL.'
+[ ! -e "./$filename" ] && [ ! -L "./$filename" ] || fail "File already exists: $filename"
+# Stage on the destination filesystem, then publish without overwriting any file.
+download_dir=$(mktemp -d './.github-release-grabber.XXXXXXXX')
+printf 'Downloading %s ...\n' "$filename" >&2
+curl --fail --location --show-error --progress-bar --proto '=https' \
+    --proto-redir '=https' --connect-timeout 20 \
+    --output "$download_dir/asset" "$url" || fail 'Download failed.'
+ln "$download_dir/asset" "./$filename" || fail "Could not save $filename (possibly already exists)."
+printf 'Downloaded: %s\n' "$filename"
