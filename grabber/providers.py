@@ -41,6 +41,7 @@ class View:
     markdown: bool = False
     preamble: str = ''
     base_url: str = ''
+    diff: bool = False
 
 
 def is_markdown(path):
@@ -180,7 +181,7 @@ class Browser:
         name = repo['full_name'] if github else repo['path_with_namespace']
         clone = repo['clone_url'] if github else repo['http_url_to_repo']
         data = {'provider': provider, 'repo': repo}
-        items = [Item('Description', 'text', {'text': repo.get('description') or 'No description.'}),
+        items = [Item('View README', 'readme', data),
                  Item('Clone URL: ' + clone, 'text', {'text': clone}, clone),
                  Item('Browse files', 'tree', dict(data, path='')),
                  Item('Releases and downloads', 'releases', data)]
@@ -194,7 +195,32 @@ class Browser:
             homepage = 'https://' + name.split('/')[-1] + '/'
         if homepage:
             items.append(Item('Read website in terminal', 'web', {'url': homepage}, homepage))
-        return View(name, items)
+        return View(name, items, preamble=repo.get('description') or 'No description.')
+
+    def readme(self, provider, repo):
+        if provider == 'GitHub':
+            try:
+                entry = self.client.json(self.repo_api(provider, repo) + '/readme')
+            except Error as exc:
+                if str(exc).startswith('HTTP 404:'):
+                    raise Error('No README found, or repository is not accessible.') from exc
+                raise
+            return self.file(provider, repo, entry['path'])
+        # GitLab search results do not include readme_url. Inspect all root
+        # directory pages so repositories with many files work as well.
+        page, candidates = 1, []
+        while True:
+            view = self.tree(provider, repo, page=page)
+            candidates.extend(item.data['path'] for item in view.items
+                              if item.kind == 'file' and
+                              re.fullmatch(r'readme(?:\..+)?', item.data['path'], re.I))
+            if not view.more:
+                break
+            page += 1
+        if not candidates:
+            raise Error('No README found in the repository root.')
+        candidates.sort(key=lambda path: (not is_markdown(path), path.lower(), path))
+        return self.file(provider, repo, candidates[0])
 
     def repo_api(self, provider, repo):
         return GH + '/repos/' + quote(repo['full_name'], safe='/') if provider == 'GitHub' else GL + '/projects/' + str(repo['id'])
@@ -252,6 +278,7 @@ class Browser:
         web_base = ('https://github.com/' + repo['full_name'] + '/blob/' if provider == 'GitHub' else
                     'https://gitlab.com/' + repo['path_with_namespace'] + '/-/blob/')
         return View(path, text=data.decode('utf-8', errors='replace'), markdown=is_markdown(path),
+                    diff=path.lower().endswith(('.diff', '.patch')),
                     base_url=web_base + branch + '/' + quote(path, safe='/'),
                     context={'repo_file': (provider, repo, path), 'anchor': anchor})
 
@@ -317,13 +344,14 @@ class Browser:
         data = item.data
         if item.kind == 'call':
             return data['callback']()
-        actions = {'repo': self.repository, 'tree': self.tree, 'file': self.file,
+        actions = {'repo': self.repository, 'tree': self.tree, 'file': self.file, 'readme': self.readme,
                    'releases': self.releases, 'release': self.release,
                    'package': self.package, 'versions': self.versions,
                    'package-version': self.package_version, 'web': self.web}
         if item.kind == 'text':
             return View(item.title, text=data.get('text') or item.title, markdown=data.get('markdown', False),
-                        preamble=data.get('preamble', ''), base_url=data.get('base_url', ''))
+                        preamble=data.get('preamble', ''), base_url=data.get('base_url', ''),
+                        diff=data.get('diff', False))
         if item.kind not in actions:
             raise Error('No action available.')
         return actions[item.kind](**data)

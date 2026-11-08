@@ -9,6 +9,7 @@ from urllib.parse import urljoin, urlsplit
 from ._vendor.mistune import create_markdown
 
 BOLD, ITALIC, CODE, QUOTE, STRIKE, LINK, HEADING = (1 << index for index in range(7))
+DIFF_ADD, DIFF_REMOVE, DIFF_HUNK, DIFF_META = (1 << index for index in range(7, 11))
 
 
 def safe(text):
@@ -83,6 +84,44 @@ def wrap(spans, width, preserve=False):
     if not result or (chars and chars[-1][0] == '\n'):
         result.append([])
     return result
+
+
+def diff_spans(source):
+    """Style unified patches without interpreting their contents as Markdown."""
+    old = new = 0
+    for line in source.split('\n'):
+        hunk = re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
+        if hunk:
+            old, new = int(hunk[2] or 1), int(hunk[4] or 1)
+            style = DIFF_HUNK | BOLD
+        elif line.startswith('diff ') or (not (old or new) and line.startswith((
+                '--- ', '+++ ', 'index ', 'new file ', 'deleted file ', 'old mode ',
+                'new mode ', 'rename ', 'copy ', 'similarity ', 'dissimilarity ',
+                'Binary files ', 'GIT binary patch'))):
+            old = new = 0
+            style = DIFF_META | BOLD
+        elif line.startswith('+'):
+            style = DIFF_ADD
+            new = max(0, new - 1)
+        elif line.startswith('-'):
+            style = DIFF_REMOVE
+            old = max(0, old - 1)
+        elif line.startswith('@@'):
+            style = DIFF_HUNK | BOLD
+        else:
+            style = 0
+            if line.startswith(' '):
+                old, new = max(0, old - 1), max(0, new - 1)
+        yield Span(line, style)
+
+
+def render_diff(source, width, preamble=''):
+    document = Document()
+    if preamble:
+        document.lines.extend(wrap([Span(preamble + '\n')], width, preserve=True))
+    for span in diff_spans(source):
+        document.lines.extend(wrap([span], width, preserve=True))
+    return document
 
 
 class HTMLText(HTMLParser):
@@ -240,7 +279,11 @@ class Renderer:
                 language = token.get('attrs', {}).get('info', '').split(' ', 1)[0]
                 self.emit([Span('┌─' + (' ' + language if language else ' code'), CODE)], prefix)
                 raw = token.get('raw', '').removesuffix('\n')
-                self.emit([Span(raw, CODE)], prefix + '│ ', preserve=True)
+                if language.lower() in ('diff', 'patch'):
+                    for span in diff_spans(raw):
+                        self.emit([span], prefix + '│ ', preserve=True)
+                else:
+                    self.emit([Span(raw, CODE)], prefix + '│ ', preserve=True)
                 self.emit([Span('└─', CODE)], prefix)
                 self.blank()
             elif kind == 'block_quote':

@@ -40,6 +40,32 @@ class FakeClient:
 
 
 class ProviderTests(unittest.TestCase):
+    def test_repository_description_and_readme_action(self):
+        client = FakeClient({'path': 'docs/README.md'})
+        browser = Browser(client)
+        repo = {'full_name': 'a/b', 'clone_url': 'https://github.com/a/b.git',
+                'description': 'Project description'}
+        menu = browser.repository('GitHub', repo)
+        self.assertEqual(menu.preamble, 'Project description')
+        self.assertEqual(menu.items[0].title, 'View README')
+        with patch.object(browser, 'file', return_value=View('README')) as read:
+            browser.activate(menu.items[0])
+            read.assert_called_once_with('GitHub', repo, 'docs/README.md')
+        self.assertTrue(client.calls[0][0].endswith('/repos/a/b/readme'))
+
+    def test_gitlab_readme_discovery_and_missing_readme(self):
+        browser = Browser(FakeClient([]))
+        repo = {'id': 1}
+        first = View('/', [Item('README.txt', 'file', {'path': 'README.txt'})], more=True)
+        second = View('/', [Item('ReadMe.md', 'file', {'path': 'ReadMe.md'})])
+        with patch.object(browser, 'tree', side_effect=[first, second]) as tree, \
+                patch.object(browser, 'file') as read:
+            browser.readme('GitLab', repo)
+            self.assertEqual(tree.call_count, 2)
+            read.assert_called_once_with('GitLab', repo, 'ReadMe.md')
+        with self.assertRaisesRegex(Error, 'No README found'):
+            browser.readme('GitLab', repo)
+
     def test_search_query_encoding_and_pagination(self):
         client = FakeClient({'items': [{'full_name': 'a/b', 'description': 'A project'}], 'total_count': 31})
         browser = Browser(client)
@@ -204,6 +230,19 @@ class NavigationTests(unittest.TestCase):
     def setUp(self):
         self.screen = Screen()
         self.app = App(self.screen, Path('/tmp'))
+
+    def test_repository_description_above_menu_and_small_terminal(self):
+        self.app.stack.append(View('repo', [Item('View README')] + [Item(str(i)) for i in range(20)],
+                                   preamble='Project description'))
+        self.app.draw()
+        self.assertEqual(self.screen.lines[2].strip(), 'Project description')
+        self.assertEqual(self.screen.lines[4].strip(), '> View README')
+        self.screen.size = (10, 35)
+        self.app.view.preamble = 'A long description ' * 100
+        self.app.key(curses.KEY_END)
+        self.app.draw()
+        self.assertIn('…', self.screen.lines[2])
+        self.assertTrue(any('> 19' in line for line in self.screen.lines.values()))
 
     def test_tabs_prompt_and_back(self):
         self.app.key('\t')

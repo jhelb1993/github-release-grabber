@@ -280,7 +280,7 @@ class Forge:
         patch = file.get('patch') if self.github else file.get('diff')
         flags = ', '.join(key for key in ('collapsed', 'too_large', 'generated_file') if file.get(key))
         text = f'{name}\n{flags}\n\n{patch or "No patch supplied (binary, empty or server-limited diff)."}\n\nDiffs may be truncated by the provider.'
-        return View(name, [Item('Read diff', 'text', {'text': text}),
+        return View(name, [Item('Read diff', 'text', {'text': text, 'diff': True}),
                            self.link('Comment on a diff line…', self.line_comment, number, record, file)])
 
     def line_comment(self, number, record, file):

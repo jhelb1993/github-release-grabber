@@ -47,6 +47,7 @@ class App:
         self.replace = False
         self.text_view = None
         self.text_width = 0
+        self.diff_colors = {}
         self.text_lines = []
         self.editor = None
 
@@ -123,6 +124,26 @@ class App:
                 # cell is still painted. Keep the full final column usable.
                 pass
 
+    def init_colors(self):
+        self.diff_colors = {}
+        try:
+            if not curses.has_colors():
+                return
+            curses.start_color()
+            background = curses.COLOR_BLACK
+            try:
+                curses.use_default_colors()
+                background = -1
+            except curses.error:
+                pass
+            for pair, (style, color) in enumerate((
+                    (md.DIFF_ADD, curses.COLOR_GREEN), (md.DIFF_REMOVE, curses.COLOR_RED),
+                    (md.DIFF_HUNK, curses.COLOR_CYAN), (md.DIFF_META, curses.COLOR_YELLOW)), 1):
+                curses.init_pair(pair, color, background)
+                self.diff_colors[style] = curses.color_pair(pair)
+        except curses.error:
+            self.diff_colors = {}
+
     def put_spans(self, row, spans):
         height, width = self.screen.getmaxyx()
         if not 0 <= row < height:
@@ -138,6 +159,9 @@ class App:
                 used += size
             style = span.style
             attr = 0
+            for flag in (md.DIFF_ADD, md.DIFF_REMOVE, md.DIFF_HUNK, md.DIFF_META):
+                if style & flag:
+                    attr |= self.diff_colors.get(flag, curses.A_BOLD)
             if style & (md.BOLD | md.HEADING):
                 attr |= curses.A_BOLD
             if style & md.ITALIC:
@@ -173,6 +197,8 @@ class App:
             anchor = self.view.context.pop('anchor', '')
             if anchor:
                 self.view.scroll = document.anchors.get(anchor, 0)
+        elif self.view.diff:
+            self.text_lines = md.render_diff(self.view.text, width, self.view.preamble).lines
         else:
             text = (self.view.preamble + '\n\n' if self.view.preamble else '') + self.view.text
             self.text_lines = [ [md.Span(line)] for line in wrapped(text, width)]
@@ -205,6 +231,17 @@ class App:
                 self.put_spans(row, line)
             self.put(height - 4, f'Line {self.view.scroll + 1}/{len(lines)} · {len(self.view.links)} Links (l)')
         else:
+            menu_row = 2
+            if self.view.preamble:
+                description = wrapped(self.view.preamble, width)
+                limit = max(1, available // 2 - 1)
+                visible = description[:limit]
+                if len(description) > limit:
+                    visible[-1] = visible[-1][:max(0, width - 1)] + '…'
+                for row, line in enumerate(visible, 2):
+                    self.put(row, line)
+                menu_row += len(visible) + 1
+                available -= len(visible) + 1
             count = len(self.view.items)
             self.view.selected = max(0, min(self.view.selected, count - 1))
             if self.view.selected < self.view.scroll:
@@ -214,7 +251,7 @@ class App:
             for index in range(self.view.scroll, min(count, self.view.scroll + available)):
                 item = self.view.items[index]
                 selected = index == self.view.selected
-                self.put(2 + index - self.view.scroll, ('> ' if selected else '  ') + item.title, curses.A_REVERSE if selected else 0)
+                self.put(menu_row + index - self.view.scroll, ('> ' if selected else '  ') + item.title, curses.A_REVERSE if selected else 0)
             summary = self.view.items[self.view.selected].summary if count else 'No entries.'
             self.put(height - 4, summary)
         if self.prompt_label:
@@ -404,6 +441,7 @@ class App:
         return True
 
     def run(self):
+        self.init_colors()
         try:
             curses.curs_set(0)
         except curses.error:

@@ -111,7 +111,11 @@ Markdown symbols, with long lines wrapped to fit the screen.
 Press **m** to inspect the original Markdown. Press **l** for numbered links;
 heading links jump within the document, and relative repository file links stay
 inside the API file browser. HTTPS links open in the built-in text reader.
-Source code, diffs, metadata and request previews remain plain text. In a form,
+Diffs use green for added lines, red for removed lines, cyan for hunk headings
+and yellow for file headers. This works in PR/MR diffs, repository `.diff` and
+`.patch` files, and fenced `diff`/`patch` Markdown blocks. Terminals without color
+use bold highlighting; the original patch markers remain visible.
+Source code, metadata and request previews remain plain text. In a form,
 select a saved multiline field and press **p** for a formatted preview without
 sending it; the editor itself continues to edit the raw Markdown.
 
