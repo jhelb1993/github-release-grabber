@@ -13,6 +13,7 @@ import unicodedata
 from .network import Client, Error
 from .cloning import clone, repository_name
 from .providers import Browser, View
+from .editor import Editor
 
 PROVIDERS = ('GitHub', 'GitLab', 'PyPI', 'github.io')
 
@@ -45,6 +46,7 @@ class App:
         self.text_view = None
         self.text_width = 0
         self.text_lines = []
+        self.editor = None
 
     def home(self, provider):
         hints = {'GitHub': 'Search repositories, read files and download releases.',
@@ -120,6 +122,9 @@ class App:
                 pass
 
     def draw(self):
+        if self.editor:
+            self.editor.draw(self)
+            return
         self.screen.erase()
         height, width = self.screen.getmaxyx()
         if height < 10 or width < 35:
@@ -162,7 +167,7 @@ class App:
             prefix = '|/-\\'[int(time.monotonic() * 5) % 4] + ' ' if self.busy else ''
             self.put(height - 3, prefix + self.status)
         self.put(height - 2, '↑↓/jk Move · Enter Open · Esc Back · / Search · Tab Provider')
-        self.put(height - 1, 'n/p Page · l Links · g URL · c Clone · d Download · ? Help · q Quit', curses.A_REVERSE)
+        self.put(height - 1, 'n/p Page · r Refresh · l Links · g URL · c Clone · d Download · ? Help · q Quit', curses.A_REVERSE)
         self.screen.refresh()
 
     def prompt(self, label, action, value=''):
@@ -213,7 +218,20 @@ class App:
                 return
         self.prompt('Git URL', self.clone_url)
 
+    def edit_field(self, field):
+        draft = self.view
+        def save(value):
+            field.value = value
+            updated = draft.context['render']()
+            updated.selected = draft.selected
+            self.stack[-1] = updated
+        self.editor = Editor(field, save)
+
     def key(self, key):
+        if self.editor:
+            if self.editor.handle(key) in ('save', 'cancel'):
+                self.editor = None
+            return True
         if self.prompt_label:
             self.edit_prompt(key)
             return True
@@ -232,6 +250,8 @@ class App:
         elif key in ('\x1b', curses.KEY_BACKSPACE, '\x7f', 'b'):
             if len(self.stack) > 1:
                 self.stack.pop()
+        elif key == 'r' and self.view.refresh:
+            self.start(self.view.refresh, replace=True)
         elif key == '/':
             self.prompt('Search', self.search)
         elif key == 'c':
@@ -253,7 +273,11 @@ class App:
                 'd on a downloadable file: save to the download directory\n'
                 'c: clone selected repository; C: enter a Git URL\n'
                 'Choose a new destination directory, then Enter to clone.\n'
-                'n/p: next/previous results page\n'
+                'n/p: next/previous results page; r: refresh issues, PRs and CI\n'
+                'Issues / Pull requests / Merge requests are in each repository menu.\n'
+                'Forms: Enter edits a field; Ctrl-S saves it; Esc discards field edits.\n'
+                'Select Review changes, inspect the preview, then SEND to publish.\n'
+                'No write is sent while editing. Tokens need the relevant permissions.\n'
                 'Esc, b or Backspace: go back\n'
                 'g: read an HTTPS page as text; l: list page links\n'
                 'q: quit; Esc during a download or clone: cancel\n\n'
@@ -279,7 +303,13 @@ class App:
                     0 if key == curses.KEY_HOME else len(self.view.items) - 1 if key == curses.KEY_END else self.view.selected + delta))
         elif key in ('\n', '\r', curses.KEY_ENTER, 'd') and self.view.items:
             item = self.view.items[self.view.selected]
-            if item.kind == 'clone' and key != 'd':
+            if item.kind == 'field' and key != 'd':
+                self.edit_field(item.data['field'])
+            elif item.kind == 'submit' and key != 'd':
+                values = {field.key: field.value for field in self.view.context['fields']}
+                submit = self.view.context['submit']
+                self.start(lambda: submit(values))
+            elif item.kind == 'clone' and key != 'd':
                 self.clone_url(item.data['url'])
             elif item.kind == 'download':
                 if key == 'd':
@@ -295,6 +325,7 @@ class App:
             curses.curs_set(0)
         except curses.error:
             pass
+        curses.raw()  # Ctrl-S reaches the editor instead of pausing terminal output.
         self.screen.keypad(True)
         self.screen.timeout(100)
         try:

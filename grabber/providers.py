@@ -35,6 +35,8 @@ class View:
     loader: object = None
     selected: int = 0
     scroll: int = 0
+    context: dict = field(default_factory=dict)
+    refresh: object = None
 
 
 def normalize(name):
@@ -174,6 +176,10 @@ class Browser:
                  Item('Clone URL: ' + clone, 'text', {'text': clone}, clone),
                  Item('Browse files', 'tree', dict(data, path='')),
                  Item('Releases and downloads', 'releases', data)]
+        from .forge import Forge
+        forge = Forge(self, provider, repo)
+        items.extend([forge.link('Issues', forge.listing, 'issue'),
+                      forge.link('Pull requests' if github else 'Merge requests', forge.listing, 'pr')])
         items.append(Item('Clone repository…', 'clone', {'url': clone}, clone))
         homepage = repo.get('homepage')
         if github and name.split('/')[-1].lower().endswith('.github.io') and not homepage:
@@ -279,6 +285,8 @@ class Browser:
 
     def activate(self, item):
         data = item.data
+        if item.kind == 'call':
+            return data['callback']()
         actions = {'repo': self.repository, 'tree': self.tree, 'file': self.file,
                    'releases': self.releases, 'release': self.release,
                    'package': self.package, 'versions': self.versions,

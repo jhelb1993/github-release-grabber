@@ -41,6 +41,7 @@ Use a UTF-8 terminal, preferably at least 80 columns wide.
 | `d` | Download the selected artifact |
 | `c` / `C` | Clone the selected repository / enter a Git URL |
 | `n` / `p` | Next / previous results page |
+| `r` | Refresh issue/PR details, lists, comments and CI views |
 | `g` | Enter an HTTPS URL to read in the terminal |
 | `l` | List and follow links from the current web page |
 | Esc, Backspace or `b` | Go back; Esc cancels an input prompt |
@@ -85,6 +86,84 @@ Provider references: [GitLab projects](https://docs.gitlab.com/api/projects/),
 [GitLab releases](https://docs.gitlab.com/api/releases/),
 [PyPI index API](https://docs.pypi.org/api/index-api/) and
 [PyPI JSON API](https://docs.pypi.org/api/json/).
+
+## Issues, pull requests and merge requests
+
+Open a repository, then select **Issues**, **Pull requests** (GitHub) or
+**Merge requests** (GitLab). These features stay inside the terminal:
+
+- Paginated lists with state, search text, label, author and assignee filters.
+  States include open, closed, all, and merged for PRs/MRs. GitHub text searches
+  use a phrase and are limited to the first 1,000 search results.
+- Descriptions, authors, timestamps, labels, assignees, milestones, branch names,
+  draft status and mergeability. GitHub's mergeability can initially be unknown;
+  press `r` to refresh it.
+- Comments, review discussions, commits and changed files with individual diffs.
+- GitHub reviews, check runs and commit statuses; GitLab approvals, pipelines
+  and pipeline jobs.
+- Create issues and draft or ready PRs/MRs; edit titles and descriptions; close
+  and reopen; change labels, assignees and milestones.
+- Add comments, reply to review discussions, comment on individual diff lines,
+  request reviewers, and resolve/unresolve GitLab review discussions.
+- GitHub reviews support COMMENT, APPROVE and REQUEST_CHANGES. GitLab supports
+  approving and withdrawing approval. Both support draft/ready transitions.
+- Merge GitHub PRs using merge, squash or rebase; merge GitLab MRs with optional
+  squash, subject to the project's merge settings and rules.
+
+### Editing and sending
+
+Select a field with Enter. The built-in editor supports multiline Markdown,
+arrow keys, Home/End, Backspace/Delete, and Ctrl-U to clear to the beginning of
+the line. **Ctrl-S saves the field**, and **Esc discards edits to that field**.
+Enter also saves single-line fields. The draft remains in the navigation stack
+while you browse other views; drafts are not saved after quitting the app.
+
+Select **Review changes…**, open **Preview changes**, and then select
+**SEND** to publish. Editing fields and reading previews do not send anything.
+Each confirmation can only be sent once, including after an uncertain network
+failure. Check the remote state before creating a replacement request. After a
+successful action, go back to the list/detail view and press `r` to refresh.
+
+Merge requests include the displayed head commit SHA. A newer pushed commit
+causes the provider to reject that merge until you refresh and review again.
+GitHub reviews and inline comments, and GitLab approvals and inline discussions,
+also refer to the displayed commit or diff references. The provider enforces
+branch protections, review requirements and access permissions.
+
+### Authentication and provider differences
+
+Set `GITHUB_TOKEN` or `GITLAB_TOKEN` before launching the app. Tokens are read
+from the environment and are never included in request previews. Write actions
+require the relevant repository permissions. For GitHub fine-grained tokens,
+issue actions need Issues write, PR/review actions need Pull requests write,
+and merging needs Contents write; check-run access may require Checks read.
+GitLab tokens need API access for writes. Repository membership, project policy
+and service tier can further restrict actions. Some GitLab comment/discussion
+endpoints require authentication even for public projects.
+
+GitHub assignees/reviewers use usernames. GitLab uses numeric user IDs for these
+write forms and the assignee filter. Metadata forms replace the complete label
+and assignee lists; empty values clear them. The repository label/milestone lists
+show the available milestone numbers (GitHub) or IDs (GitLab).
+
+GitHub PR creation accepts `owner:branch` for a fork's source branch. GitLab MR
+creation currently uses source and target branches in the selected project.
+Branches must already exist on the server. This feature does not push local
+commits or create branches automatically.
+
+Diffs are subject to provider limits: unavailable binary or truncated patches are
+identified in the viewer. GitHub limits PR file lists to 3,000 files and commit
+lists to 250 commits. Inline comments require a line present in the displayed
+diff; the provider validates it. GitHub review comments are listed individually
+with their reply context; GitLab discussions are grouped and can be resolved.
+GitHub draft transitions use its GraphQL API; the remaining operations use REST.
+
+API references: [GitHub issues](https://docs.github.com/en/rest/issues/issues),
+[GitHub PRs](https://docs.github.com/en/rest/pulls/pulls),
+[GitHub reviews](https://docs.github.com/en/rest/pulls/reviews),
+[GitLab issues](https://docs.gitlab.com/api/issues/),
+[GitLab MRs](https://docs.gitlab.com/api/merge_requests/) and
+[GitLab discussions](https://docs.gitlab.com/api/discussions/).
 
 ## Cloning repositories
 
@@ -170,6 +249,7 @@ and [release API](https://docs.github.com/en/rest/releases/releases).
 
 The offline tests require Python 3 (including curses), jq and Git. They cover provider
 adapters, terminal navigation, HTML links, download integrity, API credentials,
+issue/PR filters and payloads, draft editing, single-use confirmations,
 and the original shell commands. Network transports are replaced with fixtures;
 no network access or tokens are needed.
 
