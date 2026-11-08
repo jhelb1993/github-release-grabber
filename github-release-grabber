@@ -7,13 +7,18 @@ set -eu
 usage() {
     cat <<'HELP'
 Usage:
+  github-release-grabber tui [--provider GitHub|GitLab|PyPI|github.io]
+                            [--download-dir DIRECTORY]
   github-release-grabber search QUERY...
+  github-release-grabber clone URL [DIRECTORY]
   github-release-grabber clone-url OWNER/REPO
   github-release-grabber urls OWNER/REPO [TAG]
   github-release-grabber download OWNER/REPO [ASSET_NAME] [TAG]
   github-release-grabber OWNER/REPO
 
+tui          Browse GitHub, GitLab, PyPI and github.io in a curses terminal.
 search       Show up to 20 matching repositories and their HTTPS clone URLs.
+clone        Clone a Git URL into a new directory (requires Git and Python 3).
 clone-url    Show the HTTPS clone URL of a repository.
 urls         Show release asset URLs (default: latest stable release).
 download     Download an asset into the current directory. With several assets,
@@ -30,6 +35,19 @@ fail() {
     exit 1
 }
 
+if [ "${1:-}" = clone ]; then
+    shift
+    command -v python3 >/dev/null 2>&1 || fail 'Install Python 3 first (OpenBSD: pkg_add python3).'
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    PYTHONPATH="$script_dir${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m grabber.cloning "$@"
+fi
+if [ "${1:-}" = tui ] || { [ "$#" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; }; then
+    if [ "$#" -gt 0 ]; then shift; fi
+    command -v python3 >/dev/null 2>&1 || fail 'Install Python 3 first (OpenBSD: pkg_add python3).'
+    script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+    # Keep the caller's working directory for downloads; import beside this script.
+    PYTHONPATH="$script_dir${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m grabber.tui "$@"
+fi
 [ "$#" -gt 0 ] || { usage; exit 1; }
 case "$1" in
     -h|--help|help) usage; exit 0 ;;
