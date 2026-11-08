@@ -7,7 +7,7 @@ The original OpenBSD shell commands remain available.
 
 ## Requirements
 
-The curses interface requires Python 3 with its standard `curses` module.
+The curses interface requires Python 3.10 or newer with its standard `curses` module.
 The shell commands require `curl` and `jq`. On OpenBSD, install as root:
 
 ```sh
@@ -28,7 +28,8 @@ Run from an interactive terminal:
 ```
 
 Keep the `grabber/` Python package alongside the launcher when copying this
-project. No third-party Python packages or external browser are required.
+project. No additional Python packages or external browser need to be installed.
+The Markdown parser is bundled with its license under `grabber/_vendor/`.
 Use a UTF-8 terminal, preferably at least 80 columns wide.
 
 | Key | Action |
@@ -43,7 +44,9 @@ Use a UTF-8 terminal, preferably at least 80 columns wide.
 | `n` / `p` | Next / previous results page |
 | `r` | Refresh issue/PR details, lists, comments and CI views |
 | `g` | Enter an HTTPS URL to read in the terminal |
-| `l` | List and follow links from the current web page |
+| `l` | List and follow links from the current web page or Markdown document |
+| `m` | Toggle rendered Markdown and raw source |
+| `p` in a form | Preview the selected saved multiline Markdown field |
 | Esc, Backspace or `b` | Go back; Esc cancels an input prompt |
 | `?` | Help |
 | `q` | Quit |
@@ -86,6 +89,37 @@ Provider references: [GitLab projects](https://docs.gitlab.com/api/projects/),
 [GitLab releases](https://docs.gitlab.com/api/releases/),
 [PyPI index API](https://docs.pypi.org/api/index-api/) and
 [PyPI JSON API](https://docs.pypi.org/api/json/).
+
+## Markdown in the terminal
+
+Markdown files (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`), release notes,
+issue/PR descriptions, comments, reviews, discussions and check summaries render
+automatically. PyPI descriptions render as Markdown when the package declares
+`text/markdown`; reStructuredText and plain-text descriptions stay as text.
+
+Supported formatting includes headings, bold and italic text, inline code,
+blockquotes, ordered/nested lists, task checkboxes, horizontal rules, fenced and
+indented code blocks, tables, reference links, autolinks, images as alt text,
+and footnotes. Deleted text is dimmed because curses has no portable strikeout
+attribute. Italics fall back to underline when unavailable.
+
+Text wraps to the current terminal width using character cell widths, including
+wide characters and combining marks. Tables wrap their cells; very narrow
+screens show labeled rows instead. Code blocks keep indentation and literal
+Markdown symbols, with long lines wrapped to fit the screen.
+
+Press **m** to inspect the original Markdown. Press **l** for numbered links;
+heading links jump within the document, and relative repository file links stay
+inside the API file browser. HTTPS links open in the built-in text reader.
+Source code, diffs, metadata and request previews remain plain text. In a form,
+select a saved multiline field and press **p** for a formatted preview without
+sending it; the editor itself continues to edit the raw Markdown.
+
+The bundled Mistune parser handles Markdown structure; curses handles display.
+HTML blocks have a text fallback, and images are represented by alt text rather
+than rendered graphically. JavaScript and styles are never executed. Math,
+Mermaid diagrams and provider-specific widgets are not rendered. Other link
+schemes, such as `mailto:`, remain text because the reader supports HTTPS.
 
 ## Issues, pull requests and merge requests
 

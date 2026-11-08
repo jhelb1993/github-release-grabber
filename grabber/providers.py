@@ -3,11 +3,12 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import json
 import os
+import posixpath
 from pathlib import Path
 import re
 import tempfile
 import time
-from urllib.parse import quote, urlencode, urljoin, urlsplit, urldefrag
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urldefrag, unquote
 
 from .network import Error
 
@@ -37,6 +38,13 @@ class View:
     scroll: int = 0
     context: dict = field(default_factory=dict)
     refresh: object = None
+    markdown: bool = False
+    preamble: str = ''
+    base_url: str = ''
+
+
+def is_markdown(path):
+    return path.lower().endswith(('.md', '.markdown', '.mdown', '.mkd', '.mkdn'))
 
 
 def normalize(name):
@@ -199,7 +207,7 @@ class Browser:
                     loader=lambda number: self.releases(provider, repo, number))
 
     def release(self, provider, release):
-        items = [Item('Release description', 'text', {'text': release.get('body') or release.get('description') or 'No description.'})]
+        items = [Item('Release description', 'text', {'text': release.get('body') or release.get('description') or 'No description.', 'markdown': True, 'base_url': release.get('html_url') or release.get('_links', {}).get('self', '')})]
         if provider == 'GitHub':
             assets = [(asset['name'], asset['browser_download_url']) for asset in release['assets']]
             assets += [('source.zip', release['zipball_url']), ('source.tar.gz', release['tarball_url'])]
@@ -229,7 +237,7 @@ class Browser:
         return View(title, items, page=page, more=provider == 'GitLab' and len(items) == PAGE_SIZE,
                     loader=lambda number: self.tree(provider, repo, path, number))
 
-    def file(self, provider, repo, path):
+    def file(self, provider, repo, path, anchor=''):
         base = self.repo_api(provider, repo)
         if provider == 'GitHub':
             url = base + '/contents/' + quote(path, safe='/')
@@ -240,13 +248,20 @@ class Browser:
         data, _, _ = self.client.read(url, accept, auth=True, limit=1024 * 1024)
         if b'\x00' in data:
             raise Error('Cannot display a binary file as text.')
-        return View(path, text=data.decode('utf-8', errors='replace'))
+        branch = quote(repo.get('default_branch') or 'HEAD', safe='')
+        web_base = ('https://github.com/' + repo['full_name'] + '/blob/' if provider == 'GitHub' else
+                    'https://gitlab.com/' + repo['path_with_namespace'] + '/-/blob/')
+        return View(path, text=data.decode('utf-8', errors='replace'), markdown=is_markdown(path),
+                    base_url=web_base + branch + '/' + quote(path, safe='/'),
+                    context={'repo_file': (provider, repo, path), 'anchor': anchor})
 
     def package(self, name):
         record = self.client.json('https://pypi.org/pypi/' + quote(name, safe='') + '/json')
         info = record['info']
-        details = f"{info['name']} {info['version']}\n{info.get('summary') or ''}\nPython: {info.get('requires_python') or 'not specified'}\n\n{info.get('description') or ''}"
-        items = [Item('Description', 'text', {'text': details}),
+        preamble = f"{info['name']} {info['version']}\n{info.get('summary') or ''}\nPython: {info.get('requires_python') or 'not specified'}"
+        items = [Item('Description', 'text', {'text': info.get('description') or '(No description.)',
+                 'preamble': preamble, 'markdown': (info.get('description_content_type') or '').split(';')[0].strip() == 'text/markdown',
+                 'base_url': info.get('package_url') or 'https://pypi.org/project/' + quote(name, safe='') + '/'}),
                  Item('Downloads: ' + info['version'], 'package-version', {'name': name, 'version': info['version']}),
                  Item('All versions', 'versions', {'name': name, 'releases': record.get('releases', {})})]
         for label, url in (info.get('project_urls') or {}).items():
@@ -281,7 +296,22 @@ class Browser:
             parser = PageText(final_url)
             parser.feed(text)
             return View(final_url, text=parser.text() or '(No static text; this page may require JavaScript.)', links=parser.links)
-        return View(final_url, text=text)
+        return View(final_url, text=text, markdown='text/markdown' in content_type or is_markdown(urlsplit(final_url).path), base_url=final_url)
+
+    def markdown_link(self, view, link):
+        parts = urlsplit(link.href)
+        context = view.context.get('repo_file')
+        if context and not parts.scheme and not parts.netloc and parts.path:
+            provider, repo, path = context
+            target = unquote(parts.path)
+            target = posixpath.normpath(target.lstrip('/') if target.startswith('/') else posixpath.join(posixpath.dirname(path), target))
+            if target != '..' and not target.startswith('../'):
+                kind = 'tree' if parts.path.endswith('/') else 'file'
+                data = {'provider': provider, 'repo': repo, 'path': target}
+                if kind == 'file':
+                    data['anchor'] = unquote(parts.fragment)
+                return Item(link.label, kind, data, target)
+        return Item(link.label, 'web', {'url': link.url}, link.url)
 
     def activate(self, item):
         data = item.data
@@ -292,7 +322,8 @@ class Browser:
                    'package': self.package, 'versions': self.versions,
                    'package-version': self.package_version, 'web': self.web}
         if item.kind == 'text':
-            return View(item.title, text=data.get('text') or item.title)
+            return View(item.title, text=data.get('text') or item.title, markdown=data.get('markdown', False),
+                        preamble=data.get('preamble', ''), base_url=data.get('base_url', ''))
         if item.kind not in actions:
             raise Error('No action available.')
         return actions[item.kind](**data)

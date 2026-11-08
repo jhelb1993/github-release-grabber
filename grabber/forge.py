@@ -1,4 +1,5 @@
 """GitHub issues/PRs and GitLab issues/MRs, including reviewable write actions."""
+import re
 from urllib.parse import quote, urlencode
 
 from .forms import Field, confirmation, form
@@ -141,8 +142,9 @@ class Forge:
                 lines += [f"Branches: {record.get('source_branch')} -> {record.get('target_branch')}",
                           f"Head: {record.get('sha')}", f"Draft: {record.get('draft')}  Merge status: {record.get('detailed_merge_status')}",
                           'Reviewers: ' + ', '.join(person['username'] for person in record.get('reviewers', []))]
-        lines += ['', record.get('body') or record.get('description') or '(No description.)']
-        items = [Item('Description and metadata', 'text', {'text': '\n'.join(lines)}),
+        body = record.get('body') or record.get('description') or '(No description.)'
+        items = [Item('Description and metadata', 'text', {'text': body, 'preamble': '\n'.join(lines),
+                 'markdown': True, 'base_url': record.get('html_url') or record.get('web_url') or ''}),
                  self.link('Comments', self.comments, kind, number),
                  self.link('Add comment…', self.comment_form, kind, number),
                  self.link('Edit title / description…', self.edit, kind, number, record),
@@ -243,8 +245,9 @@ class Forge:
         items = []
         for record in records:
             title = f"{author(record)} · {record.get('created_at', '')}" + (' [system]' if record.get('system') else '')
-            text = f"{title}\n{record.get('html_url') or ''}\n\n{record.get('body') or ''}"
-            items.append(Item(title, 'text', {'text': text}, (record.get('body') or '').split('\n')[0]))
+            text = record.get('body') or '(Empty comment.)'
+            items.append(Item(title, 'text', {'text': text, 'preamble': title, 'markdown': True,
+                              'base_url': record.get('html_url') or record.get('web_url') or ''}, text.split('\n')[0]))
         return View(f'Comments #{number} — Page {page}', items, page=page, more=len(records) == PAGE_SIZE,
                     loader=lambda p: self.comments(kind, number, p), refresh=lambda: self.comments(kind, number, page))
 
@@ -254,8 +257,9 @@ class Forge:
         for record in records:
             title = record.get('name') or record.get('title') or str(record['id'])
             ident = record.get('number') if self.github and name == 'milestones' else record.get('id')
-            text = f"{title}\nID/number: {ident}\nState: {record.get('state', '')}\n\n{record.get('description') or ''}"
-            items.append(Item(title, 'text', {'text': text}, f'ID/number: {ident}'))
+            preamble = f"{title}\nID/number: {ident}\nState: {record.get('state', '')}"
+            items.append(Item(title, 'text', {'text': record.get('description') or '(No description.)',
+                              'preamble': preamble, 'markdown': name == 'milestones'}, f'ID/number: {ident}'))
         return View(name.title(), items, page=page, more=len(records) == PAGE_SIZE, loader=lambda p: self.metadata(name, p))
 
     def files(self, number, record, page=1):
@@ -322,7 +326,9 @@ class Forge:
             return View(f'Approvals #{number}', text=f"Approved by: {approved or 'none'}\nRequired: {record.get('approvals_required', 'not supplied')}\nRemaining: {record.get('approvals_left', 'not supplied')}", refresh=lambda: self.reviews(number))
         records = self.get_page(self.endpoint('pr', number) + '/reviews', page)
         items = [Item(f"{author(record)} [{record['state']}] {record.get('submitted_at') or ''}", 'text',
-                      {'text': f"{author(record)} · {record['state']}\nCommit: {record.get('commit_id')}\n\n{record.get('body') or '(No review body.)'}"}) for record in records]
+                      {'text': record.get('body') or '(No review body.)', 'markdown': True,
+                       'preamble': f"{author(record)} · {record['state']}\nCommit: {record.get('commit_id')}",
+                       'base_url': record.get('html_url') or ''}) for record in records]
         return View(f'Reviews #{number}', items, page=page, more=len(records) == PAGE_SIZE, loader=lambda p: self.reviews(number, p), refresh=lambda: self.reviews(number, page))
 
     def discussions(self, number, page=1):
@@ -339,14 +345,20 @@ class Forge:
 
     def thread(self, number, record):
         notes = [record] if self.github else record['notes']
-        text = '\n\n---\n\n'.join(f"{author(note)} · {note.get('created_at', '')}\n{note.get('path') or ''}:{note.get('line') or ''}\n{note.get('diff_hunk') or ''}\n\n{note.get('body') or ''}" for note in notes)
+        def note_text(note):
+            heading = f"### {author(note)} · {note.get('created_at', '')}\n\n"
+            code = f"{note.get('path') or ''}:{note.get('line') or ''}\n{note.get('diff_hunk') or ''}"
+            fence = '`' * max(3, max((len(run) for run in re.findall(r'`+', code)), default=0) + 1)
+            diff = f'{fence}diff\n{code}\n{fence}\n\n' if note.get('diff_hunk') else ''
+            return heading + diff + (note.get('body') or '')
+        text = '\n\n---\n\n'.join(note_text(note) for note in notes)
         base = self.endpoint('pr', number)
         if self.github:
             # GitHub replies must target the root comment, not another reply.
             url = base + f"/comments/{int(record.get('in_reply_to_id') or record['id'])}/replies"
         else:
             url = base + '/discussions/' + quote(str(record['id']), safe='') + '/notes'
-        items = [Item('Read discussion', 'text', {'text': text}), self.link('Reply…', self.comment_form, 'pr', number, url)]
+        items = [Item('Read discussion', 'text', {'text': text, 'markdown': True}), self.link('Reply…', self.comment_form, 'pr', number, url)]
         if not self.github and any(note.get('resolvable') for note in notes):
             resolved = all(note.get('resolved') for note in notes if note.get('resolvable'))
             items.append(self.link('Unresolve discussion…' if resolved else 'Resolve discussion…', self.prepare,
@@ -389,7 +401,6 @@ class Forge:
                        'variables': {'id': node}}
             return self.prepare(title, 'https://api.github.com/graphql', 'POST', payload)
         # GitLab exposes draft status through its title prefix.
-        import re
         current = re.sub(r'^(?:Draft:|WIP:|\[Draft\]|\[WIP\]|\(Draft\)|\(WIP\))\s*', '', record['title'], flags=re.I)
         return self.prepare(title, self.endpoint('pr', number), 'PUT', {'title': current if ready else 'Draft: ' + current})
 
@@ -422,8 +433,10 @@ class Forge:
         items = []
         for run in data['check_runs']:
             output = run.get('output') or {}
-            text = f"{run['name']}\nStatus: {run['status']}\nConclusion: {run.get('conclusion')}\n{run.get('details_url') or ''}\n\n{output.get('title') or ''}\n{output.get('summary') or ''}\n{output.get('text') or ''}"
-            items.append(Item(f"{run['name']} [{run.get('conclusion') or run['status']}]", 'text', {'text': text}))
+            preamble = f"{run['name']}\nStatus: {run['status']}\nConclusion: {run.get('conclusion')}\n{run.get('details_url') or ''}\n{output.get('title') or ''}"
+            text = (output.get('summary') or '') + '\n\n' + (output.get('text') or '')
+            items.append(Item(f"{run['name']} [{run.get('conclusion') or run['status']}]", 'text',
+                              {'text': text, 'preamble': preamble, 'markdown': True, 'base_url': run.get('details_url') or ''}))
         return View('Check runs', items, page=page, more=page * PAGE_SIZE < data.get('total_count', 0), loader=lambda p: self.check_runs(sha, p), refresh=lambda: self.check_runs(sha, page))
 
     def statuses(self, sha, page=1):

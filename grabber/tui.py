@@ -12,8 +12,10 @@ import unicodedata
 
 from .network import Client, Error
 from .cloning import clone, repository_name
-from .providers import Browser, View
+from .providers import Browser, Item, View
 from .editor import Editor
+from . import markdown as md
+from urllib.parse import unquote
 
 PROVIDERS = ('GitHub', 'GitLab', 'PyPI', 'github.io')
 
@@ -121,6 +123,61 @@ class App:
                 # cell is still painted. Keep the full final column usable.
                 pass
 
+    def put_spans(self, row, spans):
+        height, width = self.screen.getmaxyx()
+        if not 0 <= row < height:
+            return
+        column = 0
+        for span in spans:
+            text, used = '', 0
+            for char in md.safe(span.text).replace('\n', ' '):
+                size = md.cells(char)
+                if column + used + size > width:
+                    break
+                text += char
+                used += size
+            style = span.style
+            attr = 0
+            if style & (md.BOLD | md.HEADING):
+                attr |= curses.A_BOLD
+            if style & md.ITALIC:
+                attr |= getattr(curses, 'A_ITALIC', curses.A_UNDERLINE)
+            if style & md.LINK:
+                attr |= curses.A_UNDERLINE
+            if style & md.CODE:
+                attr |= curses.A_REVERSE
+            if style & (md.STRIKE | md.QUOTE):
+                attr |= curses.A_DIM
+            if text:
+                try:
+                    self.screen.addnstr(row, column, text, len(text), attr)
+                except curses.error:
+                    pass
+            column += used
+            if column >= width:
+                break
+
+    def prepare_text(self, width):
+        if self.view.markdown and not self.view.context.get('raw_markdown'):
+            document = md.render(self.view.text, width, self.view.base_url, self.view.preamble)
+            self.text_lines = document.lines
+            self.view.context['markdown_anchors'] = document.anchors
+            self.view.links = []
+            for index, link in enumerate(document.links, 1):
+                if link.href.startswith('#'):
+                    item = Item(link.label, 'anchor', {'view': self.view, 'slug': unquote(link.href[1:])}, link.href)
+                else:
+                    item = self.browser.markdown_link(self.view, link)
+                item.title = f'[{index}] {item.title}'
+                self.view.links.append(item)
+            anchor = self.view.context.pop('anchor', '')
+            if anchor:
+                self.view.scroll = document.anchors.get(anchor, 0)
+        else:
+            text = (self.view.preamble + '\n\n' if self.view.preamble else '') + self.view.text
+            self.text_lines = [ [md.Span(line)] for line in wrapped(text, width)]
+        self.text_view, self.text_width = self.view, width
+
     def draw(self):
         if self.editor:
             self.editor.draw(self)
@@ -141,12 +198,11 @@ class App:
         available = height - 6
         if self.view.text:
             if self.text_view is not self.view or self.text_width != width:
-                self.text_lines = wrapped(self.view.text, width)
-                self.text_view, self.text_width = self.view, width
+                self.prepare_text(width)
             lines = self.text_lines
             self.view.scroll = max(0, min(self.view.scroll, max(0, len(lines) - available)))
             for row, line in enumerate(lines[self.view.scroll:self.view.scroll + available], 2):
-                self.put(row, line)
+                self.put_spans(row, line)
             self.put(height - 4, f'Line {self.view.scroll + 1}/{len(lines)} · {len(self.view.links)} Links (l)')
         else:
             count = len(self.view.items)
@@ -167,7 +223,12 @@ class App:
             prefix = '|/-\\'[int(time.monotonic() * 5) % 4] + ' ' if self.busy else ''
             self.put(height - 3, prefix + self.status)
         self.put(height - 2, '↑↓/jk Move · Enter Open · Esc Back · / Search · Tab Provider')
-        self.put(height - 1, 'n/p Page · r Refresh · l Links · g URL · c Clone · d Download · ? Help · q Quit', curses.A_REVERSE)
+        footer = 'n/p Page · r Refresh · l Links · g URL · c Clone · d Download · ? Help · q Quit'
+        if self.view.markdown:
+            footer = 'm ' + ('Render Markdown' if self.view.context.get('raw_markdown') else 'Raw Markdown') + ' · l Links · Esc Back · ? Help · q Quit'
+        elif self.view.context.get('fields'):
+            footer = 'Enter Edit · p Preview Markdown field · Esc Back · ? Help · q Quit'
+        self.put(height - 1, footer, curses.A_REVERSE)
         self.screen.refresh()
 
     def prompt(self, label, action, value=''):
@@ -250,6 +311,15 @@ class App:
         elif key in ('\x1b', curses.KEY_BACKSPACE, '\x7f', 'b'):
             if len(self.stack) > 1:
                 self.stack.pop()
+        elif key == 'm' and self.view.markdown:
+            self.view.context['raw_markdown'] = not self.view.context.get('raw_markdown', False)
+            self.view.scroll = 0
+            self.text_view = None
+        elif key == 'p' and self.view.context.get('fields'):
+            item = self.view.items[self.view.selected]
+            if item.kind == 'field' and item.data['field'].multiline:
+                field = item.data['field']
+                self.stack.append(View('Preview: ' + field.label, text=field.value or '(Empty field.)', markdown=True))
         elif key == 'r' and self.view.refresh:
             self.start(self.view.refresh, replace=True)
         elif key == '/':
@@ -276,6 +346,8 @@ class App:
                 'n/p: next/previous results page; r: refresh issues, PRs and CI\n'
                 'Issues / Pull requests / Merge requests are in each repository menu.\n'
                 'Forms: Enter edits a field; Ctrl-S saves it; Esc discards field edits.\n'
+                'p on a multiline field previews its saved Markdown.\n'
+                'm toggles Markdown rendering/source; l lists document links.\n'
                 'Select Review changes, inspect the preview, then SEND to publish.\n'
                 'No write is sent while editing. Tokens need the relevant permissions.\n'
                 'Esc, b or Backspace: go back\n'
@@ -303,7 +375,18 @@ class App:
                     0 if key == curses.KEY_HOME else len(self.view.items) - 1 if key == curses.KEY_END else self.view.selected + delta))
         elif key in ('\n', '\r', curses.KEY_ENTER, 'd') and self.view.items:
             item = self.view.items[self.view.selected]
-            if item.kind == 'field' and key != 'd':
+            if item.kind == 'anchor' and key != 'd':
+                target = item.data['view']
+                position = target.context.get('markdown_anchors', {}).get(item.data['slug']) if item.data['slug'] else 0
+                if position is None:
+                    self.status = 'Heading not found in this document.'
+                else:
+                    while len(self.stack) > 1 and self.view is not target:
+                        self.stack.pop()
+                    target.context['raw_markdown'] = False
+                    target.scroll = position
+                    self.text_view = None
+            elif item.kind == 'field' and key != 'd':
                 self.edit_field(item.data['field'])
             elif item.kind == 'submit' and key != 'd':
                 values = {field.key: field.value for field in self.view.context['fields']}
